@@ -626,10 +626,9 @@ def check_dropdown(col, title, items, prefix):
 
 
 # ---- button callbacks ----
-def start_alerts_cb():
-    sel = current_selection()
-    if not (sel["indices"] and sel["timeframes"] and sel["zones"]):
-        return
+def _add_alerts(sel, only_new=False):
+    """Create alerts for every selected combination. only_new=True leaves existing alerts untouched."""
+    created = []
 
     def add(alerts):
         by_id = {a["id"]: a for a in alerts}
@@ -639,12 +638,23 @@ def start_alerts_cb():
                     for p in (sel["near_pcts"] if zone in NEAR_ZONES else [None]):
                         aid = alert_id(name, tf, zone, p)
                         if aid in by_id:
-                            by_id[aid].update(state="active", next_due=0)
+                            if not only_new:
+                                by_id[aid].update(state="active", next_due=0)
                         else:
                             alerts.append(make_alert(name, tf, zone, p))
                             by_id[aid] = alerts[-1]
+                            created.append(aid)
     mutate_alerts(add)
-    bot["since"] = int(time.time())
+    if created or not only_new:
+        bot["since"] = int(time.time())
+    return created
+
+
+def start_alerts_cb():
+    sel = current_selection()
+    if not (sel["indices"] and sel["timeframes"] and sel["zones"]):
+        return
+    _add_alerts(sel)
     st.toast("Alerts start aagiduchu - first notification udane varum")
 
 
@@ -726,6 +736,9 @@ with tab_dash:
                   and (cfg["near_pcts"] or not needs_pct))
         if cfg != saved:
             save_json(CONFIG_FILE, cfg)  # every change is saved
+            if ok:  # AUTO-START: dropdown-la select pannina udane alert start (Start button click venaam)
+                if _add_alerts(cfg, only_new=True):
+                    st.toast("Alert start aagiduchu - first notification udane varum")
 
         c_btn.caption("\u00a0")
         c_btn.button("Start alerts", type="primary", width="stretch", disabled=not ok,
@@ -755,8 +768,8 @@ with tab_dash:
         if not alerts:
             st.markdown(
                 "<div style='border:1px dashed #D1D5DB;border-radius:10px;padding:32px;"
-                "text-align:center;color:#6B7280'>Alerts onnum illa. Mela select panni "
-                "<b>Start alerts</b> click pannunga.</div>", unsafe_allow_html=True)
+                "text-align:center;color:#6B7280'>Alerts onnum illa. Mela select pannunga - "
+                "udane alert start aagum (<b>Start alerts</b> click panna thevai illa).</div>", unsafe_allow_html=True)
             return
 
         ids = [a["id"] for a in alerts]
