@@ -3,7 +3,9 @@ Ichimoku Cloud Alerts -> Phone notification (ntfy)  |  single-file Streamlit app
 
 Run locally :  pip install -U streamlit yfinance pandas requests
                python -m streamlit run app.py
-Secrets     :  NTFY_TOPIC = "your-topic-name"   (Streamlit Cloud: Manage app -> Settings -> Secrets)
+Secrets     :  NTFY_TOPIC = "your-topic-name"   (optional - the key can also be set / changed from the
+               dashboard: top-right "ntfy setup")
+               ADMIN_PASSWORD = "..."              (optional - locks the ntfy setup panel)
 
 How it works
   * Every selected combination (index x timeframe x cloud zone [x target %]) becomes its own alert.
@@ -12,10 +14,11 @@ How it works
     as long as the server itself stays awake.
   * Each alert has its own Pause / Resume and Delete button. There are also Pause all / Resume all and
     multi-select Pause / Resume / Delete.
-  * Tap "Action taken" on a notification (or publish `action taken` to the ntfy topic) -> all alerts are paused.
+  * Tap "Action taken" on a notification (or send a message containing `action taken` to the ntfy topic)
+    -> all alerts are paused and your message is shown in the log's "Action taken" column.
   * Every notification (time, status, action taken + time) is saved in notification_log.json.
 """
-import os, json, time, datetime, threading
+import os, re, json, time, secrets, datetime, threading
 import requests
 import pandas as pd
 import yfinance as yf
@@ -30,6 +33,8 @@ STOP_POLL_SECONDS = 10           # how often to look for "action taken" on ntfy
 CONFIG_FILE = "dashboard_config.json"   # dropdown selections
 ALERTS_FILE = "alerts.json"             # the running / paused alerts
 LOG_FILE = "notification_log.json"
+SETTINGS_FILE = "settings.json"          # ntfy key edited from the dashboard
+APP_TITLE = "Ichimoku Cloud Alert"       # title of every notification this app sends
 LOG_MAX = 2000
 
 TENKAN_PERIOD, KIJUN_PERIOD, SENKOU_B_PERIOD, DISPLACEMENT = 9, 26, 52, 26
@@ -106,7 +111,14 @@ def _secret(name, default=""):
         return default
 
 
-NTFY_TOPICS = [x.strip() for x in _secret("NTFY_TOPIC").split(",") if x.strip()]
+SECRET_TOPIC = _secret("NTFY_TOPIC")
+ADMIN_PW = _secret("ADMIN_PASSWORD")   # optional: locks the ntfy setup panel
+
+
+def get_topics():
+    """ntfy key(s): the one saved from the dashboard, else the NTFY_TOPIC secret."""
+    raw = load_json(SETTINGS_FILE, {}).get("ntfy_topic") or SECRET_TOPIC
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
 
 def now_ist():
@@ -190,7 +202,7 @@ def log_notifications(entries):
         save_json(LOG_FILE, log[-LOG_MAX:])
 
 
-def mark_action_taken(action_ts):
+def mark_action_taken(action_ts, text="action taken"):
     """'Action taken' acknowledges every notification sent since the previous acknowledgement."""
     with bot["lock"]:
         log = load_json(LOG_FILE, [])
@@ -199,6 +211,7 @@ def mark_action_taken(action_ts):
                     and bot["last_action"] <= e.get("sent_unix", 0) <= action_ts + 2):
                 e["action_unix"] = int(action_ts)
                 e["action_at"] = fmt_ist(action_ts)
+                e["action_text"] = text
         save_json(LOG_FILE, log)
 
 
@@ -250,14 +263,16 @@ def live_price(ticker):
 
 # ---------- ntfy ----------
 def active_channels():
-    return ["Phone notification (ntfy)"] if NTFY_TOPICS else []
+    return ["Phone notification (ntfy)"] if get_topics() else []
 
 
 def send_alert(message, with_button=True):
     """Push notification through ntfy. The 'Action taken' button posts 'action taken' to the topic."""
+    topics = get_topics()
+
     def worker():
-        for topic in NTFY_TOPICS:
-            headers = {"Title": "Ichimoku Cloud Alert", "Priority": "high"}
+        for topic in topics:
+            headers = {"Title": APP_TITLE, "Priority": "high"}
             if with_button:
                 headers["Actions"] = (f"http, Action taken, https://ntfy.sh/{topic}, "
                                       f"method=POST, body=action taken, clear=true")
@@ -268,16 +283,17 @@ def send_alert(message, with_button=True):
             except Exception as e:
                 print("ntfy error:", e)
 
-    if NTFY_TOPICS:
+    if topics:
         threading.Thread(target=worker, daemon=True).start()
     else:
-        print("No NTFY_TOPIC set - notification not sent")
+        print("No ntfy key set - notification not sent")
 
 
 def ntfy_stop_requested(since):
-    """Unix time of the latest 'action taken' published to the topic after `since`, else 0."""
-    found = 0
-    for topic in NTFY_TOPICS:
+    """(unix time, message text) of the latest 'action taken' message published to the topic
+    after `since` (this app's own notifications are ignored), else None."""
+    found = None
+    for topic in get_topics():
         try:
             r = requests.get(f"https://ntfy.sh/{topic}/json",
                              params={"poll": "1", "since": str(int(since))}, timeout=15)
@@ -286,20 +302,22 @@ def ntfy_stop_requested(since):
                     m = json.loads(line)
                 except Exception:
                     continue
-                if (m.get("event") == "message" and m.get("time", 0) >= int(since)
-                        and "action taken" in str(m.get("message", "")).lower()):
-                    found = max(found, int(m["time"]))
+                text = str(m.get("message", ""))
+                if (m.get("event") == "message" and m.get("title") != APP_TITLE
+                        and m.get("time", 0) >= int(since) and "action taken" in text.lower()):
+                    if not found or int(m["time"]) >= found[0]:
+                        found = (int(m["time"]), text.strip())
         except Exception as e:
             print("ntfy poll error:", e)
     return found
 
 
-def handle_action_taken(ts):
+def handle_action_taken(ts, text="action taken"):
     mutate_alerts(lambda alerts: [a.update(state="paused") for a in alerts])
-    mark_action_taken(ts)
+    mark_action_taken(ts, text)
     bot["last_action"], bot["since"] = ts, ts + 1
-    send_alert("✅ Action taken - ellaa alerts-um PAUSE aagiduchu. Dashboard-la irundhu Resume pannalaam.",
-               with_button=False)
+    send_alert("✅ Neenga action eduthuteenga - ellaa alerts-um PAUSE aagiduchu. "
+               "Dashboard-la irundhu Resume pannalaam.", with_button=False)
 
 
 # ---------- scan / engine ----------
@@ -360,7 +378,7 @@ def run_scan(due):
             sent_ids.append(a["id"])
         blocks.append(build_block(name, tf, res["price"], res["top"], res["bottom"], lines,
                                   any_match, in_market_hours(SEGMENT_OF[name])))
-    if blocks:  # one combined notification per scan
+    if blocks and get_topics():  # one combined notification per scan
         send_alert("\n\n".join(blocks))
         log_notifications(log_entries)
 
@@ -382,11 +400,11 @@ def engine_loop():
             now = time.time()
             alerts = load_alerts()
             active = [a for a in alerts if a["state"] == "active"]
-            if active and NTFY_TOPICS and now - last_poll >= STOP_POLL_SECONDS:
+            if active and get_topics() and now - last_poll >= STOP_POLL_SECONDS:
                 last_poll = now
-                ts = ntfy_stop_requested(bot["since"])
-                if ts:
-                    handle_action_taken(ts)
+                hit = ntfy_stop_requested(bot["since"])
+                if hit:
+                    handle_action_taken(*hit)
                     continue
             due = [a for a in active if a.get("next_due", 0) <= now]
             if due or (alerts and now >= next_refresh):
@@ -413,11 +431,87 @@ def ensure_engine():
 
 ensure_engine()
 
-st.markdown(
-    "<div style='background:#131B3B;padding:18px 22px;border-radius:10px;margin-bottom:18px'>"
+PLAY_URL = "https://play.google.com/store/apps/details?id=io.heckel.ntfy"
+IOS_URL = "https://apps.apple.com/us/app/ntfy/id1625396347"
+
+
+def _valid_topics(raw):
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+    return items, bool(items) and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", x) for x in items)
+
+
+def save_topic_cb():
+    raw = st.session_state.get("ntfy_topic_input", "")
+    if not raw.strip():
+        save_json(SETTINGS_FILE, {"ntfy_topic": ""})       # fall back to the Secrets key
+        st.toast("Dashboard key neekkiyaachu - Secrets key use aagum")
+        return
+    items, ok = _valid_topics(raw)
+    if not ok:
+        st.toast("Key-la letters, numbers, - and _ mattum (max 64) use pannunga")
+        return
+    save_json(SETTINGS_FILE, {"ntfy_topic": ",".join(items)})
+    bot["since"] = int(time.time())
+    st.toast("Puthu key save aachu - phone-la ntfy app-la indha key-ku Subscribe pannunga")
+
+
+def random_topic_cb():
+    st.session_state["ntfy_topic_input"] = "ichimoku-" + secrets.token_hex(6)
+    st.toast("Random key ready - Save click pannunga")
+
+
+def test_topic_cb():
+    if get_topics():
+        send_alert("🔔 Test notification - ntfy setup correct-ah work aagudhu!", with_button=False)
+        st.toast("Test notification anuppiyaachu")
+    else:
+        st.toast("Munnadi key save pannunga")
+
+
+def unlock_cb():
+    if st.session_state.get("setup_pw") == ADMIN_PW:
+        st.session_state["setup_ok"] = True
+    else:
+        st.toast("Password thappu")
+
+
+def ntfy_setup_panel():
+    st.markdown("**📲 Phone notification setup**")
+    if ADMIN_PW and not st.session_state.get("setup_ok"):
+        st.text_input("Password", type="password", key="setup_pw")
+        st.button("Unlock", key="setup_unlock", on_click=unlock_cb)
+        return
+    st.markdown("**1. ntfy app install pannunga**")
+    c1, c2 = st.columns(2)
+    c1.link_button("Android", PLAY_URL, width="stretch")
+    c2.link_button("iPhone", IOS_URL, width="stretch")
+    st.markdown("**2. App-la `+` click panni, indha key-ku Subscribe pannunga**")
+    topics = get_topics()
+    if topics:
+        for t in topics:
+            st.code(t, language=None)
+    else:
+        st.warning("Innum key set aagala. Keela oru key kudutthu Save pannunga.")
+    st.markdown("**3. Key maathanum na inga edit pannunga**")
+    st.text_input("ntfy key", key="ntfy_topic_input", label_visibility="collapsed",
+                  placeholder="example: ichimoku-sathya-48271")
+    b = st.columns(3)
+    b[0].button("💾 Save", key="ntfy_save", on_click=save_topic_cb, width="stretch")
+    b[1].button("🎲 Random", key="ntfy_rand", on_click=random_topic_cb, width="stretch")
+    b[2].button("🔔 Test", key="ntfy_test", on_click=test_topic_cb, width="stretch")
+    st.caption("Key maathinaa phone-la puthu key-ku thirumba Subscribe pannanum (pazhaya key-a unsubscribe pannunga). "
+               "Comma vechu rendu key-um kudukkalaam.")
+
+
+st.session_state.setdefault("ntfy_topic_input", ", ".join(get_topics()))
+h_left, h_right = st.columns([5, 1.3], vertical_alignment="center")
+h_left.markdown(
+    "<div style='background:#131B3B;padding:18px 22px;border-radius:10px;margin-bottom:6px'>"
     "<h2 style='color:#fff;margin:0;font-size:22px'>Ichimoku Cloud Alerts &rarr; Phone Notification</h2></div>",
     unsafe_allow_html=True,
 )
+with h_right.popover("📲 ntfy setup", width="stretch"):
+    ntfy_setup_panel()
 
 # ---- session defaults come from the saved config; checkbox states live in session_state ----
 saved = load_json(CONFIG_FILE, DEFAULT_CFG)
@@ -597,9 +691,10 @@ with tab_dash:
             st.caption("MCX: Yahoo-la MCX feed illa, so international futures price (USD) use aagudhu (Gold GC=F, Silver SI=F, Crude CL=F, Natural Gas NG=F, Copper HG=F).")
         if active_channels():
             st.caption("Alert channel: " + ", ".join(active_channels()) +
-                       "  ·  Stop: notification-la \"Action taken\" button / ntfy-la \"action taken\" nu send pannunga / niche Pause")
+                       "  ·  Stop: notification-la \"Action taken\" button / ntfy-la \"action taken ...\" nu message anuppunga / keela Pause")
         else:
-            st.warning("NTFY_TOPIC is not set in Secrets - notifications will not be sent.")
+            st.warning("ntfy key set aagala - mela right-top \"📲 ntfy setup\"-la key kudutthu Save pannunga "
+                       "(illana Secrets-la NTFY_TOPIC). Key illama notification pogaadhu.")
 
     @st.fragment(run_every=10)
     def alerts_panel():
@@ -679,7 +774,7 @@ with tab_log:
             if e.get("kind") == "manual":
                 continue
             if e.get("action_at"):
-                action, at = "Yes", e["action_at"]
+                action, at = (e.get("action_text") or "Yes"), e["action_at"]
             elif any_active and e.get("sent_unix", 0) >= bot["last_action"]:
                 action, at = "Pending", "-"
             else:
