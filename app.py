@@ -47,7 +47,7 @@ if __name__ == "__main__" and "--keep-awake" in sys.argv:
         _browser.close()
     sys.exit(0)
 
-import os, re, json, time, secrets, datetime, threading
+import os, re, json, time, secrets, datetime, threading, hashlib
 import requests
 import pandas as pd
 import yfinance as yf
@@ -349,7 +349,7 @@ def ntfy_stop_requested(since):
     """(unix time of the latest message, text of the message(s)) for ANY message you publish to the
     topic after `since` (typed in the ntfy app chat box or the 'Action taken' button). This app's own
     notifications (title = APP_TITLE) are ignored. Returns None when there is no such message."""
-    msgs = {}
+    msgs, err = {}, None
     for topic in get_topics():
         try:
             r = requests.get(f"https://ntfy.sh/{topic}/json",
@@ -364,7 +364,10 @@ def ntfy_stop_requested(since):
                         and m.get("time", 0) >= int(since) and text):
                     msgs[m.get("id") or f"{topic}-{m['time']}-{text}"] = (int(m["time"]), text)
         except Exception as e:
+            err = str(e)[:80]
             print("ntfy poll error:", e)
+    bot["poll_info"] = {"at": now_ist().strftime("%H:%M:%S"), "n": len(msgs), "err": err,
+                        "last": (sorted(msgs.values())[-1][1][:40] if msgs else "")}
     if not msgs:
         return None
     ordered = sorted(msgs.values())
@@ -450,12 +453,15 @@ def run_scan(due):
     mutate_alerts(update)
 
 
-def engine_loop():
-    """Runs for the whole life of the app: every active alert notifies every 5 minutes."""
+def engine_loop(gen):
+    """Runs for the whole life of the app: every active alert notifies every 5 minutes.
+    Stops by itself when a newer code version has started a newer engine (gen changed)."""
     next_refresh, last_poll = 0, time.time()
     while True:
         try:
             time.sleep(1)
+            if bot.get("engine_gen") != gen:
+                return
             now = time.time()
             alerts = load_alerts()
             active = [a for a in alerts if a["state"] == "active"]
@@ -475,18 +481,34 @@ def engine_loop():
 
 
 # ====================== STREAMLIT UI ======================
+try:
+    with open(__file__, "rb") as _f:
+        ENGINE_VERSION = hashlib.md5(_f.read()).hexdigest()
+except Exception:
+    ENGINE_VERSION = "dev"
+
+
 def ensure_engine():
-    """Start the background engine once per server process (also creates the default alert)."""
+    """Start the background engine (also creates the default alert). A new code version replaces the
+    engine thread of the old code version automatically."""
     with bot["lock"]:
-        if bot["engine_started"]:
+        if bot.get("engine_version") == ENGINE_VERSION:
             return
+        if bot["engine_started"] and "engine_version" not in bot:
+            # an engine thread of a much older code version is running and cannot be stopped from here
+            bot["stale_engine"] = True
+            return
+        first = not bot["engine_started"]
         bot["engine_started"] = True
+        bot["engine_version"] = ENGINE_VERSION
+        bot["engine_gen"] = bot.get("engine_gen", 0) + 1
         now = int(time.time())
-        bot["since"], bot["last_action"] = now, now
+        if first:
+            bot["since"], bot["last_action"] = now, now
         # fresh start (or empty / broken file): Nifty 50 default alerts
         if not load_json(ALERTS_FILE, []):
             save_json(ALERTS_FILE, [make_alert("Nifty 50", "4h", z, None) for z in ("above", "below")])
-        threading.Thread(target=engine_loop, daemon=True).start()
+        threading.Thread(target=engine_loop, args=(bot["engine_gen"],), daemon=True).start()
 
 
 ensure_engine()
@@ -589,6 +611,9 @@ h_left.markdown(
 )
 with h_right.popover("📲 ntfy setup", width="stretch"):
     ntfy_setup_panel()
+if bot.get("stale_engine"):
+    st.error("Pazhaya code-oda engine innum odikittu irukku, adhaala pudhu features (chat-la type panni stop, "
+             "etc.) work aagaadhu. Streamlit Cloud-la **Manage app → ⋮ → Reboot app** pannunga.")
 
 # ---- session defaults come from the saved config; checkbox states live in session_state ----
 saved = load_json(CONFIG_FILE, DEFAULT_CFG)
@@ -795,6 +820,11 @@ with tab_dash:
         mk = "  ·  ".join(f"{s} {'open' if in_market_hours(s) else 'closed'}" for s in SEGMENTS)
         st.info(f"🟢 **Alerts engine running** · Active: {n_act} · Paused: {len(alerts) - n_act} · "
                 f"Last scan: {bot['last_scan'] or '-'} · {mk}")
+        pi = bot.get("poll_info")
+        if pi and n_act:
+            st.caption(f"💬 Chat check: {pi['at']} · neenga anuppina messages: {pi['n']}"
+                       + (f" · last: \"{pi['last']}\"" if pi["last"] else "")
+                       + (f" · ⚠ error: {pi['err']}" if pi["err"] else ""))
 
         if not alerts:
             st.markdown(
