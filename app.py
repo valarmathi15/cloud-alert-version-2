@@ -16,6 +16,7 @@ How it works
     multi-select Pause / Resume / Delete.
   * Tap "Action taken" on a notification (or send a message containing `action taken` to the ntfy topic)
     -> all alerts are paused and your message is shown in the log's "Action taken" column.
+    ANY message you type in the ntfy chat box also stops the alerts and is shown there; the column can be edited by hand.
   * Every notification (time, status, action taken + time) is saved in notification_log.json.
 
 Keep-awake (optional, free): `python app.py --keep-awake` opens the app in a headless browser so the free
@@ -345,9 +346,10 @@ def send_alert(message, with_button=True):
 
 
 def ntfy_stop_requested(since):
-    """(unix time, message text) of the latest 'action taken' message published to the topic
-    after `since` (this app's own notifications are ignored), else None."""
-    found = None
+    """(unix time of the latest message, text of the message(s)) for ANY message you publish to the
+    topic after `since` (typed in the ntfy app chat box or the 'Action taken' button). This app's own
+    notifications (title = APP_TITLE) are ignored. Returns None when there is no such message."""
+    msgs = {}
     for topic in get_topics():
         try:
             r = requests.get(f"https://ntfy.sh/{topic}/json",
@@ -357,14 +359,16 @@ def ntfy_stop_requested(since):
                     m = json.loads(line)
                 except Exception:
                     continue
-                text = str(m.get("message", ""))
+                text = str(m.get("message", "")).strip()
                 if (m.get("event") == "message" and m.get("title") != APP_TITLE
-                        and m.get("time", 0) >= int(since) and "action taken" in text.lower()):
-                    if not found or int(m["time"]) >= found[0]:
-                        found = (int(m["time"]), text.strip())
+                        and m.get("time", 0) >= int(since) and text):
+                    msgs[m.get("id") or f"{topic}-{m['time']}-{text}"] = (int(m["time"]), text)
         except Exception as e:
             print("ntfy poll error:", e)
-    return found
+    if not msgs:
+        return None
+    ordered = sorted(msgs.values())
+    return ordered[-1][0], " | ".join(t for _, t in ordered)
 
 
 def handle_action_taken(ts, text="action taken"):
@@ -777,7 +781,7 @@ with tab_dash:
             st.caption("MCX: Yahoo-la MCX feed illa, so international futures price (USD) use aagudhu (Gold GC=F, Silver SI=F, Crude CL=F, Natural Gas NG=F, Copper HG=F).")
         if active_channels():
             st.caption("Alert channel: " + ", ".join(active_channels()) +
-                       "  ·  Stop: notification-la \"Action taken\" button / ntfy-la \"action taken ...\" nu message anuppunga / keela Pause")
+                       "  ·  Stop: notification-la \"Action taken\" button / ntfy chat-la edhu type panni anuppinaalum alerts stop aagum (andha message log-la kaattum) / keela Pause")
         else:
             st.warning("ntfy key set aagala - mela right-top \"📲 ntfy setup\"-la key kudutthu Save pannunga "
                        "(illana Secrets-la NTFY_TOPIC). Key illama notification pogaadhu.")
@@ -851,13 +855,44 @@ with tab_dash:
 
     alerts_panel()
 
+def _edit_log_cb():
+    """Save manual edits of the 'Action taken' column back to notification_log.json."""
+    ss = st.session_state
+    ver = ss.get("log_ver", 0)
+    edits = (ss.get(f"log_editor_{ver}") or {}).get("edited_rows", {})
+    idx_map = ss.get("_log_map", [])
+    if not edits:
+        return
+    with bot["lock"]:
+        log = load_json(LOG_FILE, [])
+        for pos, changes in edits.items():
+            pos = int(pos)
+            if "Action taken" not in changes or pos >= len(idx_map):
+                continue
+            k = idx_map[pos]
+            if k >= len(log):
+                continue
+            txt = str(changes["Action taken"] or "").strip()
+            if txt in ("", "-", "No", "Pending"):          # cleared -> back to not-acknowledged
+                for f in ("action_unix", "action_at", "action_text"):
+                    log[k].pop(f, None)
+            else:
+                ts = int(time.time())
+                if not log[k].get("action_unix"):
+                    log[k]["action_unix"], log[k]["action_at"] = ts, fmt_ist(ts)
+                log[k]["action_text"] = txt
+        save_json(LOG_FILE, log)
+    ss["log_ver"] = ver + 1   # fresh editor so it shows the saved values
+
+
 with tab_log:
     @st.fragment(run_every=10)
     def log_panel():
         log = load_json(LOG_FILE, [])
         any_active = any(a["state"] == "active" for a in load_alerts())
-        data = []
-        for e in reversed(log):
+        data, idx_map = [], []
+        for k in range(len(log) - 1, -1, -1):
+            e = log[k]
             if e.get("kind") == "manual":
                 continue
             if e.get("action_at"):
@@ -870,6 +905,7 @@ with tab_log:
                 result = "✅ IRUKKU" if e["matched"] else "❌ ILLA"
             else:
                 result = "-"
+            idx_map.append(k)
             data.append({
                 "Sent at (IST)": e.get("sent_at", ""),
                 "Index": e.get("index", ""),
@@ -884,9 +920,16 @@ with tab_log:
             st.info("Innum notification poga-la. Pogum bodhu inga time, result, action taken ellam save aagi varum.")
             return
         df = pd.DataFrame(data)
-        st.caption(f"{len(df)} notifications saved (newest first)")
-        st.dataframe(df.style.format({"Price": lambda v: f"{v:,.2f}" if isinstance(v, (int, float)) else v}),
-                     width="stretch", hide_index=True)
+        st.session_state["_log_map"] = idx_map
+        st.caption(f"{len(df)} notifications saved (newest first) · \"Action taken\" cell-a double-click panni "
+                   f"neengalae edit pannalaam (Enter = save)")
+        st.data_editor(
+            df, width="stretch", hide_index=True,
+            key=f"log_editor_{st.session_state.get('log_ver', 0)}",
+            disabled=[c for c in df.columns if c != "Action taken"],
+            column_config={"Price": st.column_config.NumberColumn("Price", format="%.2f"),
+                           "Action taken": st.column_config.TextColumn("Action taken", width="medium")},
+            on_change=_edit_log_cb)
         st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"),
                            file_name="notification_log.csv", mime="text/csv", key="dl_log")
 
