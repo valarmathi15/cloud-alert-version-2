@@ -220,6 +220,33 @@ def evaluate(zone, pct, price, top, bottom):
     return False
 
 
+def reach_info(zone, pct, price, top, bottom):
+    """How far the price is from triggering this alert: (matched, text)."""
+    near = (float(pct) if pct is not None else 1.0) / 100
+    lo, hi = {                       # price band that triggers the alert (None = open-ended)
+        "above": (top, None),
+        "below": (None, bottom),
+        "inside": (bottom, top),
+        "near_top": (top * (1 - near), top),
+        "near_bottom": (bottom, bottom * (1 + near)),
+    }[zone]
+    matched = evaluate(zone, pct, price, top, bottom)
+
+    def move(target):
+        d = target - price
+        return f"{'↑' if d > 0 else '↓'} {abs(d) / price * 100:.2f}% ({d:+,.2f}) → {target:,.2f}"
+
+    if matched:
+        if zone == "above":
+            return True, f"✅ Reached · {(price - top) / top * 100:.2f}% above top"
+        if zone == "below":
+            return True, f"✅ Reached · {(bottom - price) / bottom * 100:.2f}% below bottom"
+        return True, "✅ Reached"
+    if lo is not None and price < lo:   # price is under the zone -> needs to go up
+        return False, move(lo)
+    return False, move(hi)              # price is over the zone -> needs to come down
+
+
 # ---------- notification log (saved to file, survives setting changes) ----------
 def log_notifications(entries):
     if not entries:
@@ -784,11 +811,11 @@ with tab_dash:
         b[4].button("🗑 Delete selected", key="b_del_sel", width="stretch", on_click=bulk_cb, args=("delete", "sel"))
         b[5].caption(f"{n_sel} selected")
 
-        W = [0.4, 1.3, 0.8, 1.9, 1.0, 1.8, 1.3, 1.0, 1.0, 0.5, 0.5]
+        W = [0.4, 1.3, 0.8, 1.9, 1.0, 1.8, 1.3, 2.4, 1.0, 1.0, 0.5, 0.5]
         h = st.columns(W, vertical_alignment="center")
         h[0].checkbox("Select all", key="sel_all", on_change=sel_all_cb, label_visibility="collapsed")
-        for c, t in zip(h[1:9], ["Index", "TF", "Alert", "Live price", "Cloud (bottom - top)",
-                                 "Status", "State", "Next"]):
+        for c, t in zip(h[1:10], ["Index", "TF", "Alert", "Live price", "Cloud (bottom - top)",
+                                  "Status", "To reach (move needed → price)", "State", "Next"]):
             c.caption(t)
         st.divider()
 
@@ -802,24 +829,25 @@ with tab_dash:
             c[2].write(a["tf"].upper())
             c[3].write(alert_label(a["zone"], a.get("pct")))
             if not res:
-                c[4].write("-"); c[5].write("-"); c[6].write("...checking")
+                c[4].write("-"); c[5].write("-"); c[6].write("...checking"); c[7].write("-")
             elif res["error"]:
-                c[4].write("-"); c[5].write("-"); c[6].markdown(":orange[data error]")
+                c[4].write("-"); c[5].write("-"); c[6].markdown(":orange[data error]"); c[7].write("-")
             else:
                 c[4].write(f"{res['price']:,.2f}")
                 c[5].write(f"{res['bottom']:,.2f} - {res['top']:,.2f}")
-                m = evaluate(a["zone"], a.get("pct"), res["price"], res["top"], res["bottom"])
+                m, reach = reach_info(a["zone"], a.get("pct"), res["price"], res["top"], res["bottom"])
                 c[6].markdown(":green[✅ IRUKKU]" if m else ":red[❌ ILLA]")
+                c[7].markdown(f":green[{reach}]" if m else f":orange[{reach}]")
             paused = a["state"] != "active"
-            c[7].markdown(":gray[⏸ Paused]" if paused else ":green[● Active]")
+            c[8].markdown(":gray[⏸ Paused]" if paused else ":green[● Active]")
             if paused:
-                c[8].write("-")
+                c[9].write("-")
             else:
                 left = int(a.get("next_due", 0) - now)
-                c[8].write("now" if left <= 0 else f"{left // 60}m {left % 60:02d}s")
-            c[9].button("▶" if paused else "⏸", key=f"tg_{a['id']}", on_click=toggle_pause_cb,
+                c[9].write("now" if left <= 0 else f"{left // 60}m {left % 60:02d}s")
+            c[10].button("▶" if paused else "⏸", key=f"tg_{a['id']}", on_click=toggle_pause_cb,
                         args=(a["id"],), help="Resume" if paused else "Pause")
-            c[10].button("🗑", key=f"dl_{a['id']}", on_click=delete_cb, args=({a["id"]},), help="Delete")
+            c[11].button("🗑", key=f"dl_{a['id']}", on_click=delete_cb, args=({a["id"]},), help="Delete")
 
     alerts_panel()
 
