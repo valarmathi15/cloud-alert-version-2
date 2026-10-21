@@ -65,6 +65,9 @@ LOG_FILE = "notification_log.json"
 SETTINGS_FILE = "settings.json"          # ntfy key edited from the dashboard
 APP_TITLE = "Ichimoku Cloud Alert"       # title of every notification this app sends
 LOG_MAX = 2000
+# Buttons shown under every alert notification (max 3, no commas / semicolons in the text).
+# Tapping one stops all alerts and its text is shown in the log's "Action taken" column.
+ACTION_BUTTONS = ["Action taken", "1% hedged", "Portfolio 50% booked"]
 
 TENKAN_PERIOD, KIJUN_PERIOD, SENKOU_B_PERIOD, DISPLACEMENT = 9, 26, 52, 26
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -323,15 +326,16 @@ def active_channels():
 
 
 def send_alert(message, with_button=True):
-    """Push notification through ntfy. The 'Action taken' button posts 'action taken' to the topic."""
+    """Push notification through ntfy. Each ACTION_BUTTONS button posts its own text to the topic."""
     topics = get_topics()
 
     def worker():
         for topic in topics:
             headers = {"Title": APP_TITLE, "Priority": "high"}
-            if with_button:
-                headers["Actions"] = (f"http, Action taken, https://ntfy.sh/{topic}, "
-                                      f"method=POST, body=action taken, clear=true")
+            if with_button:   # ntfy allows max 3 buttons; tapping one posts its text to the topic
+                headers["Actions"] = "; ".join(
+                    f"http, {label}, https://ntfy.sh/{topic}, method=POST, body={label}, clear=true"
+                    for label in ACTION_BUTTONS)
             try:
                 r = requests.post(f"https://ntfy.sh/{topic}", data=message.encode("utf-8"),
                                   headers=headers, timeout=20)
