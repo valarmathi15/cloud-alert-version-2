@@ -452,7 +452,8 @@ def ensure_engine():
         bot["engine_started"] = True
         now = int(time.time())
         bot["since"], bot["last_action"] = now, now
-        if not os.path.exists(ALERTS_FILE):  # fresh start: Nifty 50 only
+        # fresh start (or empty / broken file): Nifty 50 default alerts
+        if not load_json(ALERTS_FILE, []):
             save_json(ALERTS_FILE, [make_alert("Nifty 50", "4h", z, None) for z in ("above", "below")])
         threading.Thread(target=engine_loop, daemon=True).start()
 
