@@ -1,0 +1,21 @@
+name: Keep Streamlit app awake
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"      # every 3 hours (UTC)
+  workflow_dispatch:             # lets you run it by hand from the Actions tab
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright
+      - run: playwright install --with-deps chromium
+      - run: python app.py --keep-awake
+        env:
+          APP_URL: https://cloud-alert.streamlit.app
