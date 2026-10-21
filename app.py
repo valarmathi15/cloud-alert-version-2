@@ -17,7 +17,35 @@ How it works
   * Tap "Action taken" on a notification (or send a message containing `action taken` to the ntfy topic)
     -> all alerts are paused and your message is shown in the log's "Action taken" column.
   * Every notification (time, status, action taken + time) is saved in notification_log.json.
+
+Keep-awake (optional, free): `python app.py --keep-awake` opens the app in a headless browser so the free
+Streamlit Cloud app does not sleep. It is used by .github/workflows/keep_awake.yml (that small config file
+must stay a separate file because GitHub only reads workflows from that folder).
 """
+import sys
+
+if __name__ == "__main__" and "--keep-awake" in sys.argv:
+    # ---- GitHub Actions mode: visit the app like a real visitor, then exit (Streamlit is not started) ----
+    import os as _os
+    import time as _time
+    from playwright.sync_api import sync_playwright
+
+    _url = _os.environ.get("APP_URL", "https://cloud-alert.streamlit.app")
+    _stay = int(_os.environ.get("STAY_SECONDS", "90"))
+    with sync_playwright() as _p:
+        _browser = _p.chromium.launch()
+        _page = _browser.new_page()
+        _page.goto(_url, wait_until="domcontentloaded", timeout=120_000)
+        try:  # a sleeping app shows this button
+            _page.get_by_role("button", name="Yes, get this app back up!").click(timeout=15_000)
+            print("App was sleeping - wake-up button clicked")
+        except Exception:
+            print("No wake-up button (app already awake)")
+        _time.sleep(_stay)  # stay connected so the script runs and the engine thread starts
+        print("Page title:", _page.title())
+        _browser.close()
+    sys.exit(0)
+
 import os, re, json, time, secrets, datetime, threading
 import requests
 import pandas as pd
@@ -455,6 +483,13 @@ def save_topic_cb():
     st.toast("Puthu key save aachu - phone-la ntfy app-la indha key-ku Subscribe pannunga")
 
 
+def reset_topic_cb():
+    save_json(SETTINGS_FILE, {"ntfy_topic": ""})
+    st.session_state["ntfy_topic_input"] = SECRET_TOPIC
+    bot["since"] = int(time.time())
+    st.toast("Ippo Secrets-la irukkura key use aagudhu")
+
+
 def random_topic_cb():
     st.session_state["ntfy_topic_input"] = "ichimoku-" + secrets.token_hex(6)
     st.toast("Random key ready - Save click pannunga")
@@ -487,9 +522,18 @@ def ntfy_setup_panel():
     c2.link_button("iPhone", IOS_URL, width="stretch")
     st.markdown("**2. App-la `+` click panni, indha key-ku Subscribe pannunga**")
     topics = get_topics()
+    override = load_json(SETTINGS_FILE, {}).get("ntfy_topic") or ""
     if topics:
         for t in topics:
             st.code(t, language=None)
+        if override:
+            st.caption("Ippo use aagurathu: **dashboard-la save pannina key** (Secrets key-a override pannudhu).")
+            if SECRET_TOPIC and SECRET_TOPIC != override:
+                st.caption(f"Secrets-la irukkura key `{SECRET_TOPIC}` maaraadhu. Streamlit Secrets-a app-lerundhu "
+                           "maatha mudiyaadhu, adha maathanum na Streamlit Settings > Secrets-la neenga thaan maathanum.")
+            st.button("↩ Secrets key use pannu", key="ntfy_reset", on_click=reset_topic_cb)
+        else:
+            st.caption("Ippo use aagurathu: Streamlit **Secrets**-la irukkura key.")
     else:
         st.warning("Innum key set aagala. Keela oru key kudutthu Save pannunga.")
     st.markdown("**3. Key maathanum na inga edit pannunga**")
@@ -500,7 +544,8 @@ def ntfy_setup_panel():
     b[1].button("🎲 Random", key="ntfy_rand", on_click=random_topic_cb, width="stretch")
     b[2].button("🔔 Test", key="ntfy_test", on_click=test_topic_cb, width="stretch")
     st.caption("Key maathinaa phone-la puthu key-ku thirumba Subscribe pannanum (pazhaya key-a unsubscribe pannunga). "
-               "Comma vechu rendu key-um kudukkalaam.")
+               "Dashboard-la save pannina key app reboot aanaa azhinjidum, appo Secrets key use aagum. "
+               "Permanent-ah venum na Secrets-layum same key maathunga. Comma vechu rendu key-um kudukkalaam.")
 
 
 st.session_state.setdefault("ntfy_topic_input", ", ".join(get_topics()))
