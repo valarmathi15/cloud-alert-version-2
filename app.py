@@ -494,8 +494,8 @@ def handle_action_taken(ts, text="action taken"):
     mutate_alerts(lambda alerts: [a.update(state="paused") for a in alerts])
     mark_action_taken(ts, text)
     bot["last_action"], bot["since"] = ts, ts + 1
-    send_alert("✅ Neenga action eduthuteenga - ellaa alerts-um PAUSE aagiduchu. "
-               "Dashboard-la irundhu Resume pannalaam.", with_button=False)
+    send_alert("✅ Action recorded - all alerts are PAUSED. "
+               "You can resume them from the dashboard.", with_button=False)
 
 
 # ---------- scan / engine ----------
@@ -548,7 +548,7 @@ def run_scan(due):
             m = evaluate(a["zone"], a.get("pct"), res["price"], res["top"], res["bottom"])
             any_match = any_match or m
             label = alert_label(a["zone"], a.get("pct"))
-            lines.append(f"{'✅' if m else '❌'} {label} - {'IRUKKU' if m else 'ILLA'}")
+            lines.append(f"{'✅' if m else '❌'} {label} - {'MET' if m else 'NOT MET'}")
             log_entries.append({
                 "sent_unix": start, "sent_at": fmt_ist(start), "index": name, "tf": tf,
                 "alert": label, "zone": a["zone"], "matched": m, "price": res["price"],
@@ -642,42 +642,42 @@ def save_topic_cb():
     raw = st.session_state.get("ntfy_topic_input", "")
     if not raw.strip():
         save_json(SETTINGS_FILE, {"ntfy_topic": ""})       # fall back to the Secrets key
-        st.toast("Dashboard key neekkiyaachu - Secrets key use aagum")
+        st.toast("Dashboard key removed - the Secrets key will be used")
         return
     items, ok = _valid_topics(raw)
     if not ok:
-        st.toast("Key-la letters, numbers, - and _ mattum (max 64) use pannunga")
+        st.toast("Key can only contain letters, numbers, - and _ (max 64 characters)")
         return
     save_json(SETTINGS_FILE, {"ntfy_topic": ",".join(items)})
     bot["since"] = int(time.time())
-    st.toast("Puthu key save aachu - phone-la ntfy app-la indha key-ku Subscribe pannunga")
+    st.toast("New key saved - subscribe to it in the ntfy phone app")
 
 
 def reset_topic_cb():
     save_json(SETTINGS_FILE, {"ntfy_topic": ""})
     st.session_state["ntfy_topic_input"] = SECRET_TOPIC
     bot["since"] = int(time.time())
-    st.toast("Ippo Secrets-la irukkura key use aagudhu")
+    st.toast("Now using the key from Secrets")
 
 
 def random_topic_cb():
     st.session_state["ntfy_topic_input"] = "ichimoku-" + secrets.token_hex(6)
-    st.toast("Random key ready - Save click pannunga")
+    st.toast("Random key ready - click Save")
 
 
 def test_topic_cb():
     if get_topics():
-        send_alert("🔔 Test notification - ntfy setup correct-ah work aagudhu!", with_button=False)
-        st.toast("Test notification anuppiyaachu")
+        send_alert("🔔 Test notification - your ntfy setup is working!", with_button=False)
+        st.toast("Test notification sent")
     else:
-        st.toast("Munnadi key save pannunga")
+        st.toast("Save a key first")
 
 
 def unlock_cb():
     if st.session_state.get("setup_pw") == ADMIN_PW:
         st.session_state["setup_ok"] = True
     else:
-        st.toast("Password thappu")
+        st.toast("Wrong password")
 
 
 def ntfy_setup_panel():
@@ -686,36 +686,42 @@ def ntfy_setup_panel():
         st.text_input("Password", type="password", key="setup_pw")
         st.button("Unlock", key="setup_unlock", on_click=unlock_cb)
         return
-    st.markdown("**1. ntfy app install pannunga**")
+    st.markdown("**1. Install the ntfy app**")
     c1, c2 = st.columns(2)
     c1.link_button("Android", PLAY_URL, width="stretch")
     c2.link_button("iPhone", IOS_URL, width="stretch")
-    st.markdown("**2. App-la `+` click panni, indha key-ku Subscribe pannunga**")
+    st.markdown("**2. In the app, tap `+` and subscribe to this key**")
     topics = get_topics()
     override = load_json(SETTINGS_FILE, {}).get("ntfy_topic") or ""
     if topics:
         for t in topics:
             st.code(t, language=None)
         if override:
-            st.caption("Ippo use aagurathu: **dashboard-la save pannina key** (Secrets key-a override pannudhu).")
+            st.caption("Currently using: **the key saved in this dashboard** (it overrides the Secrets key).")
             if SECRET_TOPIC and SECRET_TOPIC != override:
-                st.caption(f"Secrets-la irukkura key `{SECRET_TOPIC}` maaraadhu. Streamlit Secrets-a app-lerundhu "
-                           "maatha mudiyaadhu, adha maathanum na Streamlit Settings > Secrets-la neenga thaan maathanum.")
-            st.button("↩ Secrets key use pannu", key="ntfy_reset", on_click=reset_topic_cb)
+                st.caption(f"The Secrets key `{SECRET_TOPIC}` is not changed by this. "
+                           "To change it, follow step 4 below.")
+            st.button("↩ Use the Secrets key", key="ntfy_reset", on_click=reset_topic_cb)
         else:
-            st.caption("Ippo use aagurathu: Streamlit **Secrets**-la irukkura key.")
+            st.caption("Currently using: the key from Streamlit **Secrets**.")
     else:
-        st.warning("Innum key set aagala. Keela oru key kudutthu Save pannunga.")
-    st.markdown("**3. Key maathanum na inga edit pannunga**")
+        st.warning("No key set yet. Enter a key below and click Save.")
+    st.markdown("**3. Change the key here (optional)**")
     st.text_input("ntfy key", key="ntfy_topic_input", label_visibility="collapsed",
                   placeholder="example: ichimoku-sathya-48271")
     b = st.columns(3)
     b[0].button("💾 Save", key="ntfy_save", on_click=save_topic_cb, width="stretch")
     b[1].button("🎲 Random", key="ntfy_rand", on_click=random_topic_cb, width="stretch")
     b[2].button("🔔 Test", key="ntfy_test", on_click=test_topic_cb, width="stretch")
-    st.caption("Key maathinaa phone-la puthu key-ku thirumba Subscribe pannanum (pazhaya key-a unsubscribe pannunga). "
-               "Dashboard-la save pannina key app reboot aanaa azhinjidum, appo Secrets key use aagum. "
-               "Permanent-ah venum na Secrets-layum same key maathunga. Comma vechu rendu key-um kudukkalaam.")
+    st.caption("After changing the key, subscribe to the new key in the phone app (and unsubscribe from the old one). "
+               "A key saved here is lost when the app reboots, and the Secrets key is used again. "
+               "For a permanent change use step 4. You can enter two keys separated by a comma.")
+    st.markdown("**4. Change the Secrets key (permanent)**")
+    st.markdown("1. Open your app and click **Manage app** (bottom-right corner)\n"
+                "2. Click **⋮** → **Settings** → **Secrets**\n"
+                "3. Edit the line below with your new key and click **Save**")
+    st.code('NTFY_TOPIC = "your-new-key"', language="toml")
+    st.caption("The app restarts by itself after saving. Then subscribe to the new key in the ntfy phone app.")
 
 
 st.session_state.setdefault("ntfy_topic_input", ", ".join(get_topics()))
@@ -728,8 +734,8 @@ h_left.markdown(
 with h_right.popover("📲 ntfy setup", width="stretch"):
     ntfy_setup_panel()
 if bot.get("stale_engine"):
-    st.error("Pazhaya code-oda engine innum odikittu irukku, adhaala pudhu features (chat-la type panni stop, "
-             "etc.) work aagaadhu. Streamlit Cloud-la **Manage app → ⋮ → Reboot app** pannunga.")
+    st.error("An older version of the engine is still running, so new features (such as stopping alerts by "
+             "typing in the chat) will not work. In Streamlit Cloud open **Manage app → ⋮ → Reboot app**.")
 
 # ---- session defaults come from the saved config; checkbox states live in session_state ----
 saved = load_json(CONFIG_FILE, DEFAULT_CFG)
@@ -806,7 +812,7 @@ def add_custom_cb():
     sym = re.sub(r"\.NS$", "", str(ss.get("custom_in", "")).strip().upper())
     ss["custom_in"] = ""
     if not re.fullmatch(r"[A-Z0-9&\-]{1,20}", sym):
-        st.toast("Sariyaana NSE symbol type pannunga (example: IRCTC)")
+        st.toast("Enter a valid NSE symbol (example: IRCTC)")
         return
     if sym not in INDICES:
         cfg = load_json(CONFIG_FILE, DEFAULT_CFG)
@@ -849,7 +855,7 @@ def start_alerts_cb():
     if not (sel["indices"] and sel["timeframes"] and sel["zones"]):
         return
     _add_alerts(sel)
-    st.toast("Alerts start aagiduchu - first notification udane varum")
+    st.toast("Alerts started - the first notification is on its way")
 
 
 def toggle_pause_cb(aid):
@@ -881,7 +887,7 @@ def bulk_cb(action, scope):
     else:
         ids = [a["id"] for a in alerts if st.session_state.get(f"sel_{a['id']}")]
         if not ids:
-            st.toast("Munnadi list-la alerts-a select pannunga")
+            st.toast("Select alerts in the list first")
             return
     if action == "delete":
         delete_cb(set(ids))
@@ -925,7 +931,7 @@ with tab_dash:
             check_dropdown(c_np, "Target % (Near Cloud)", NEAR_OPTIONS, "np")
 
         if "Stocks" in sel_segments:
-            st.text_input("➕ Vera NSE stock venum na symbol type panni Enter pannunga (example: IRCTC, PAYTM)",
+            st.text_input("➕ Need another NSE stock? Type its symbol and press Enter (example: IRCTC, PAYTM)",
                           key="custom_in", on_change=add_custom_cb, placeholder="NSE symbol")
 
         sel = current_selection()
@@ -935,26 +941,26 @@ with tab_dash:
                   and (cfg["near_pcts"] or not needs_pct))
         if cfg != saved:
             save_json(CONFIG_FILE, cfg)  # every change is saved
-            if ok:  # AUTO-START: dropdown-la select pannina udane alert start (Start button click venaam)
+            if ok:  # AUTO-START: alerts start as soon as you select (no need to click Start)
                 if _add_alerts(cfg, only_new=True):
-                    st.toast("Alert start aagiduchu - first notification udane varum")
+                    st.toast("Alert started - the first notification is on its way")
 
         c_btn.caption("\u00a0")
         c_btn.button("Start alerts", type="primary", width="stretch", disabled=not ok,
                      on_click=start_alerts_cb)
 
         if needs_pct and not cfg["near_pcts"]:
-            st.warning("Near Cloud Top / Bottom select pannirukeenga - Target % (0.5 / 1 / 2 / 3) ethaavadhu onnu select pannunga.")
+            st.warning("You selected Near Cloud Top / Bottom - please choose at least one Target % (0.5 / 1 / 2 / 3).")
         if any(x in cfg["segments"] for x in ("MCX", "Crypto")):
-            st.caption("MCX / Crypto: Yahoo-la Indian feed illa, so international price (USD) x USDINR = ₹ value use aagudhu "
+            st.caption("MCX / Crypto: Yahoo has no Indian feed, so the international price (USD) x USDINR = ₹ value is used "
                        "(Gold ₹/10g, Silver ₹/kg, Crude ₹/barrel, Natural Gas ₹/mmBtu, Copper ₹/kg). "
-                       "MCX / Indian exchange premium & duty-um serala, so real price-la irundhu konjam vithyasam varum.")
+                       "Indian exchange premium and duty are not included, so prices can differ slightly from the real MCX price.")
         if active_channels():
             st.caption("Alert channel: " + ", ".join(active_channels()) +
-                       "  ·  Stop: notification-la \"Action taken\" button / ntfy chat-la edhu type panni anuppinaalum alerts stop aagum (andha message log-la kaattum) / keela Pause")
+                       "  ·  Stop: tap a button on the notification / type anything in the ntfy chat (your message is shown in the log) / or use Pause below")
         else:
-            st.warning("ntfy key set aagala - mela right-top \"📲 ntfy setup\"-la key kudutthu Save pannunga "
-                       "(illana Secrets-la NTFY_TOPIC). Key illama notification pogaadhu.")
+            st.warning("ntfy key not set - open \"📲 ntfy setup\" (top-right), enter a key and click Save "
+                       "(or set NTFY_TOPIC in Secrets). No notifications are sent without a key.")
 
     @st.fragment(run_every=10)
     def alerts_panel():
@@ -967,15 +973,15 @@ with tab_dash:
                 f"Last scan: {bot['last_scan'] or '-'} · {mk}")
         pi = bot.get("poll_info")
         if pi and n_act:
-            st.caption(f"💬 Chat check: {pi['at']} · neenga anuppina messages: {pi['n']}"
+            st.caption(f"💬 Chat check: {pi['at']} · messages you sent: {pi['n']}"
                        + (f" · last: \"{pi['last']}\"" if pi["last"] else "")
                        + (f" · ⚠ error: {pi['err']}" if pi["err"] else ""))
 
         if not alerts:
             st.markdown(
                 "<div style='border:1px dashed #D1D5DB;border-radius:10px;padding:32px;"
-                "text-align:center;color:#6B7280'>Alerts onnum illa. Mela select pannunga - "
-                "udane alert start aagum (<b>Start alerts</b> click panna thevai illa).</div>", unsafe_allow_html=True)
+                "text-align:center;color:#6B7280'>No alerts yet. Select above - alerts start automatically "
+                "(no need to click <b>Start alerts</b>).</div>", unsafe_allow_html=True)
             return
 
         ids = [a["id"] for a in alerts]
@@ -1015,7 +1021,7 @@ with tab_dash:
                 c[4].write(fmt_p(res["price"]))
                 c[5].write(f"{fmt_p(res['bottom'])} - {fmt_p(res['top'])}")
                 m, reach = reach_info(a["zone"], a.get("pct"), res["price"], res["top"], res["bottom"])
-                c[6].markdown(":green[✅ IRUKKU]" if m else ":red[❌ ILLA]")
+                c[6].markdown(":green[✅ MET]" if m else ":red[❌ NOT MET]")
                 c[7].markdown(f":green[{reach}]" if m else f":orange[{reach}]")
             paused = a["state"] != "active"
             c[8].markdown(":gray[⏸ Paused]" if paused else ":green[● Active]")
@@ -1077,7 +1083,7 @@ with tab_log:
             else:
                 action, at = "No", "-"
             if "matched" in e:
-                result = "✅ IRUKKU" if e["matched"] else "❌ ILLA"
+                result = "✅ MET" if e["matched"] else "❌ NOT MET"
             else:
                 result = "-"
             idx_map.append(k)
@@ -1092,12 +1098,12 @@ with tab_log:
                 "Action time (IST)": at,
             })
         if not data:
-            st.info("Innum notification poga-la. Pogum bodhu inga time, result, action taken ellam save aagi varum.")
+            st.info("No notifications sent yet. Time, result and action taken will be saved here as they go out.")
             return
         df = pd.DataFrame(data)
         st.session_state["_log_map"] = idx_map
-        st.caption(f"{len(df)} notifications saved (newest first) · \"Action taken\" cell-a double-click panni "
-                   f"neengalae edit pannalaam (Enter = save)")
+        st.caption(f"{len(df)} notifications saved (newest first) · double-click an \"Action taken\" cell "
+                   f"to edit it by hand (Enter = save)")
         st.data_editor(
             df, width="stretch", hide_index=True,
             key=f"log_editor_{st.session_state.get('log_ver', 0)}",
