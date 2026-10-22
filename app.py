@@ -75,10 +75,19 @@ SEGMENT_HOURS = {            # IST, Mon-Fri (exchange holidays are not covered)
     "NSE": (datetime.time(9, 15), datetime.time(15, 30)),
     "BSE": (datetime.time(9, 15), datetime.time(15, 30)),
     "MCX": (datetime.time(9, 0), datetime.time(23, 30)),
+    "Stocks": (datetime.time(9, 15), datetime.time(15, 30)),
+    # Crypto = 24x7, Forex = Mon ~03:00 IST to Sat ~03:00 IST (handled in in_market_hours)
 }
 
 # Yahoo Finance tickers. BSE (except Sensex) are best guesses - verify once on Yahoo.
-# MCX: Yahoo has no MCX feed, so these are the international futures (USD) used as a proxy.
+# Stocks: NSE stocks (Yahoo ticker = SYMBOL.NS). Any other NSE stock can be typed in the dashboard.
+NSE_STOCKS = ["RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC", "SBIN", "LT",
+              "HINDUNILVR", "KOTAKBANK", "AXISBANK", "BAJFINANCE", "M&M", "MARUTI", "SUNPHARMA",
+              "HCLTECH", "NTPC", "TITAN", "ULTRACEMCO", "ONGC", "ADANIPORTS", "POWERGRID", "TATASTEEL",
+              "COALINDIA", "ASIANPAINT", "BAJAJFINSV", "NESTLEIND", "JSWSTEEL", "WIPRO", "GRASIM",
+              "HINDALCO", "TECHM", "ADANIENT", "CIPLA", "DRREDDY", "EICHERMOT", "HEROMOTOCO", "BPCL",
+              "APOLLOHOSP", "TATACONSUM", "BRITANNIA", "INDUSINDBK", "SBILIFE", "HDFCLIFE",
+              "SHRIRAMFIN", "TRENT", "BEL", "BAJAJ-AUTO", "ETERNAL", "JIOFIN"]
 INDICES_BY_SEGMENT = {
     "NSE": {
         "Nifty 50": "^NSEI",
@@ -96,6 +105,7 @@ INDICES_BY_SEGMENT = {
         "BSE Midcap": "BSE-MIDCAP.BO",
         "BSE Smallcap": "BSE-SMLCAP.BO",
     },
+    # MCX: Yahoo has no MCX feed -> international futures (USD) x USDINR, converted to MCX units (see INR_FACTOR)
     "MCX": {
         "Gold": "GC=F",
         "Silver": "SI=F",
@@ -103,10 +113,47 @@ INDICES_BY_SEGMENT = {
         "Natural Gas": "NG=F",
         "Copper": "HG=F",
     },
+    "Stocks": {sym: f"{sym}.NS" for sym in NSE_STOCKS},
+    # Crypto: USD price x USDINR = rupee value
+    "Crypto": {
+        "Bitcoin": "BTC-USD",
+        "Ethereum": "ETH-USD",
+        "BNB": "BNB-USD",
+        "XRP": "XRP-USD",
+        "Solana": "SOL-USD",
+        "Dogecoin": "DOGE-USD",
+        "Cardano": "ADA-USD",
+    },
+    "Forex": {
+        "USD/INR": "USDINR=X",
+        "EUR/INR": "EURINR=X",
+        "GBP/INR": "GBPINR=X",
+        "JPY/INR": "JPYINR=X",
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "USDJPY=X",
+        "AUD/USD": "AUDUSD=X",
+        "USD/CAD": "USDCAD=X",
+        "USD/CHF": "USDCHF=X",
+        "EUR/JPY": "EURJPY=X",
+        "GBP/JPY": "GBPJPY=X",
+    },
 }
 SEGMENTS = list(INDICES_BY_SEGMENT.keys())
 INDICES = {n: t for seg in INDICES_BY_SEGMENT.values() for n, t in seg.items()}
 SEGMENT_OF = {n: s for s, d in INDICES_BY_SEGMENT.items() for n in d}
+
+# Rupee conversion: price(INR) = USD price x USDINR x factor. Factor converts to the Indian trading unit.
+USDINR = "USDINR=X"
+MCX_ADJ = {}   # optional fine-tune to match the real MCX price, e.g. {"Gold": 1.05} (MCX has duty/premium)
+INR_FACTOR = {
+    "Gold": 10 / 31.1035 * MCX_ADJ.get("Gold", 1.0),             # USD/oz  -> INR per 10 g
+    "Silver": 1000 / 31.1035 * MCX_ADJ.get("Silver", 1.0),       # USD/oz  -> INR per kg
+    "Crude Oil": 1.0 * MCX_ADJ.get("Crude Oil", 1.0),            # USD/bbl -> INR per barrel
+    "Natural Gas": 1.0 * MCX_ADJ.get("Natural Gas", 1.0),        # USD/mmBtu -> INR per mmBtu
+    "Copper": 1 / 0.45359237 * MCX_ADJ.get("Copper", 1.0),       # USD/lb  -> INR per kg
+    **{n: 1.0 for n in INDICES_BY_SEGMENT["Crypto"]},            # USD -> INR
+}
 
 TFS = {"30m": "30 Minutes", "1h": "1 Hour", "4h": "4 Hours", "1d": "1 Day"}
 ZONES = {
@@ -119,7 +166,32 @@ ZONES = {
 NEAR_ZONES = ("near_top", "near_bottom")
 NEAR_OPTIONS = [("0.5", "0.5%"), ("1", "1%"), ("2", "2%"), ("3", "3%")]
 DEFAULT_CFG = {"segments": ["NSE"], "indices": ["Nifty 50"], "timeframes": ["4h"],
-               "zones": ["above", "below"], "near_pcts": [1]}
+               "zones": ["above", "below"], "near_pcts": [1], "custom_stocks": []}
+
+
+def ticker_of(name):
+    """Yahoo ticker of an index / commodity / stock. Unknown names = NSE stocks typed by the user."""
+    return INDICES.get(name) or f"{name}.NS"
+
+
+def segment_of(name):
+    return SEGMENT_OF.get(name, "Stocks")
+
+
+def _dec(x):
+    x = abs(x)
+    return 2 if x >= 100 else (3 if x >= 10 else 5)
+
+
+def fmt_p(x):
+    """Price text: 2 decimals for big prices, more decimals for forex / cheap prices."""
+    return f"{x:,.{_dec(x)}f}"
+
+
+def rnd_p(x):
+    return round(x, _dec(x))
+
+
 # ================================
 
 
@@ -163,8 +235,14 @@ def fmt_ist(ts):
 
 def in_market_hours(segment="NSE"):
     t = now_ist()
+    wd, tm = t.weekday(), t.time()
+    if segment == "Crypto":
+        return True
+    if segment == "Forex":     # Mon ~03:00 IST -> Sat ~03:00 IST
+        return (wd in (1, 2, 3, 4) or (wd == 0 and tm >= datetime.time(3, 0))
+                or (wd == 5 and tm < datetime.time(3, 0)))
     lo, hi = SEGMENT_HOURS.get(segment, SEGMENT_HOURS["NSE"])
-    return t.weekday() < 5 and lo <= t.time() <= hi
+    return wd < 5 and lo <= tm <= hi
 
 
 def load_json(path, default):
@@ -238,7 +316,8 @@ def reach_info(zone, pct, price, top, bottom):
 
     def move(target):
         d = target - price
-        return f"{'↑' if d > 0 else '↓'} {abs(d) / price * 100:.2f}% ({d:+,.2f}) → {target:,.2f}"
+        return (f"{'↑' if d > 0 else '↓'} {abs(d) / price * 100:.2f}% "
+                f"({'+' if d > 0 else '-'}{fmt_p(abs(d))}) → {fmt_p(target)}")
 
     if matched:
         if zone == "above":
@@ -315,9 +394,42 @@ def cloud_levels(df):
 
 def live_price(ticker):
     try:
-        return round(float(yf.Ticker(ticker).fast_info["last_price"]), 2)
+        return rnd_p(float(yf.Ticker(ticker).fast_info["last_price"]))
     except Exception:
         return None
+
+
+def price_of(name):
+    """Live price of an alert instrument (MCX / Crypto converted to INR)."""
+    p = live_price(ticker_of(name))
+    if p is None or name not in INR_FACTOR:
+        return p
+    fx = live_price(USDINR)
+    return rnd_p(p * fx * INR_FACTOR[name]) if fx else None
+
+
+def data_for(name, tf):
+    """Candles of an alert instrument (MCX / Crypto converted to INR with the USDINR candles)."""
+    df = get_data(ticker_of(name), tf)
+    if name not in INR_FACTOR:
+        return df
+    try:
+        fx = get_data(USDINR, tf)["Close"]
+        fx_tz, df_tz = getattr(fx.index, "tz", None), getattr(df.index, "tz", None)
+        if fx_tz is not None and df_tz is not None:
+            fx = fx.tz_convert(df_tz)
+        elif fx_tz is not None:
+            fx = fx.tz_localize(None)
+        elif df_tz is not None:
+            fx = fx.tz_localize(df_tz)
+        rate = fx.reindex(df.index, method="ffill").bfill()
+    except Exception:
+        rate = pd.Series(live_price(USDINR) or float("nan"), index=df.index)
+    f = rate * INR_FACTOR[name]
+    df = df.copy()
+    for c in ("Open", "High", "Low", "Close"):
+        df[c] = df[c] * f
+    return df.dropna(subset=["High", "Low", "Close"])
 
 
 # ---------- ntfy ----------
@@ -389,8 +501,8 @@ def handle_action_taken(ts, text="action taken"):
 # ---------- scan / engine ----------
 def build_block(name, tf, price, top, bottom, lines, any_match, market_open):
     out = [f"{'✅' if any_match else '❌'} {name} ({tf.upper()})",
-           f"Live price: {price:,.2f}",
-           f"Cloud: {bottom:,.2f} - {top:,.2f}"] + lines
+           f"Live price: {fmt_p(price)}",
+           f"Cloud: {fmt_p(bottom)} - {fmt_p(top)}"] + lines
     if not market_open:
         out.append("(market closed - last close price)")
     return "\n".join(out)
@@ -407,15 +519,15 @@ def run_scan(due):
 
     for name, tf in pairs:
         if name not in prices:
-            prices[name] = live_price(INDICES[name])
+            prices[name] = price_of(name)
         price = prices[name]
         res = {"price": price, "top": None, "bottom": None, "error": None, "ts": start}
         if price is None:
             res["error"] = "no live price"
         else:
             try:
-                top, bottom = cloud_levels(get_data(INDICES[name], tf))
-                res.update(top=round(top, 2), bottom=round(bottom, 2))
+                top, bottom = cloud_levels(data_for(name, tf))
+                res.update(top=rnd_p(top), bottom=rnd_p(bottom))
             except Exception as e:
                 res["error"] = f"data error: {e}"
         results[f"{name}|{tf}"] = res
@@ -443,7 +555,7 @@ def run_scan(due):
                 "kind": "auto", "action_unix": None, "action_at": None})
             sent_ids.append(a["id"])
         blocks.append(build_block(name, tf, res["price"], res["top"], res["bottom"], lines,
-                                  any_match, in_market_hours(SEGMENT_OF[name])))
+                                  any_match, in_market_hours(segment_of(name))))
     if blocks and get_topics():  # one combined notification per scan
         send_alert("\n\n".join(blocks))
         log_notifications(log_entries)
@@ -622,7 +734,9 @@ if bot.get("stale_engine"):
 # ---- session defaults come from the saved config; checkbox states live in session_state ----
 saved = load_json(CONFIG_FILE, DEFAULT_CFG)
 saved_segments = saved.get("segments") or sorted(
-    {SEGMENT_OF[i] for i in saved.get("indices", []) if i in SEGMENT_OF}) or ["NSE"]
+    {segment_of(i) for i in saved.get("indices", [])}) or ["NSE"]
+customs = [c for c in saved.get("custom_stocks", []) if c not in INDICES]   # NSE stocks typed by the user
+ALL_NAMES = list(INDICES) + customs
 _np_saved = saved.get("near_pcts")
 if not _np_saved:
     _np_saved = [saved["near_pct"]] if "near_pct" in saved else [1]
@@ -635,7 +749,7 @@ def keep(key, default):
 
 for s_ in SEGMENTS:
     keep(f"seg_{s_}", s_ in saved_segments)
-for n_ in INDICES:
+for n_ in ALL_NAMES:
     keep(f"idx_{n_}", n_ in saved.get("indices", []))
 for t_ in TFS:
     keep(f"tf_{t_}", t_ in saved.get("timeframes", []))
@@ -650,10 +764,11 @@ def current_selection():
     segs = [s for s in SEGMENTS if ss.get(f"seg_{s}")]
     return {
         "segments": segs,
-        "indices": [n for n in INDICES if SEGMENT_OF[n] in segs and ss.get(f"idx_{n}")],
+        "indices": [n for n in ALL_NAMES if segment_of(n) in segs and ss.get(f"idx_{n}")],
         "timeframes": [t for t in TFS if ss.get(f"tf_{t}")],
         "zones": [z for z in ZONES if ss.get(f"zn_{z}")],
         "near_pcts": [float(v) for v, _ in NEAR_OPTIONS if ss.get(f"np_{v}")],
+        "custom_stocks": customs,
     }
 
 
@@ -683,6 +798,25 @@ def check_dropdown(col, title, items, prefix):
         for v, lbl in items:
             st.checkbox(lbl, key=f"{prefix}_{v}")
     return [v for v in values if st.session_state[f"{prefix}_{v}"]]
+
+
+def add_custom_cb():
+    """Add any NSE stock typed by the user (e.g. IRCTC) to the Stocks list and select it."""
+    ss = st.session_state
+    sym = re.sub(r"\.NS$", "", str(ss.get("custom_in", "")).strip().upper())
+    ss["custom_in"] = ""
+    if not re.fullmatch(r"[A-Z0-9&\-]{1,20}", sym):
+        st.toast("Sariyaana NSE symbol type pannunga (example: IRCTC)")
+        return
+    if sym not in INDICES:
+        cfg = load_json(CONFIG_FILE, DEFAULT_CFG)
+        cs = cfg.get("custom_stocks", [])
+        if sym not in cs:
+            cs.append(sym)
+        cfg["custom_stocks"] = cs
+        save_json(CONFIG_FILE, cfg)
+    ss[f"idx_{sym}"] = True
+    ss["seg_Stocks"] = True
 
 
 # ---- button callbacks ----
@@ -778,19 +912,24 @@ with tab_dash:
         c_seg, c_idx, c_tf, c_zn, c_np, c_btn = st.columns([1, 1.6, 1.3, 1.6, 1.0, 1.1])
 
         sel_segments = check_dropdown(c_seg, "Segment", [(s, s) for s in SEGMENTS], "seg")
-        idx_items = [(n, n) for n in INDICES if SEGMENT_OF[n] in sel_segments]
+        idx_items = [(n, n) for n in ALL_NAMES if segment_of(n) in sel_segments]
         if idx_items:
-            sel_indices = check_dropdown(c_idx, "Index", idx_items, "idx")
+            sel_indices = check_dropdown(c_idx, "Index / Symbol", idx_items, "idx")
         else:
             sel_indices = []
             c_idx.caption("Index")
             c_idx.popover("Select segment first", width="stretch", disabled=True)
         sel_tfs = check_dropdown(c_tf, "Timeframe", list(TFS.items()), "tf")
         sel_zones = check_dropdown(c_zn, "Cloud (alert me when price is)", list(ZONES.items()), "zn")
-        check_dropdown(c_np, "Target % (Near Cloud)", NEAR_OPTIONS, "np")
+        if any(z in NEAR_ZONES for z in sel_zones):   # Target % only for Near Cloud Top / Bottom
+            check_dropdown(c_np, "Target % (Near Cloud)", NEAR_OPTIONS, "np")
+
+        if "Stocks" in sel_segments:
+            st.text_input("➕ Vera NSE stock venum na symbol type panni Enter pannunga (example: IRCTC, PAYTM)",
+                          key="custom_in", on_change=add_custom_cb, placeholder="NSE symbol")
 
         sel = current_selection()
-        cfg = {k: sel[k] for k in ("segments", "indices", "timeframes", "zones", "near_pcts")}
+        cfg = {k: sel[k] for k in ("segments", "indices", "timeframes", "zones", "near_pcts", "custom_stocks")}
         needs_pct = any(z in NEAR_ZONES for z in cfg["zones"])
         ok = bool(cfg["indices"] and cfg["timeframes"] and cfg["zones"]
                   and (cfg["near_pcts"] or not needs_pct))
@@ -806,8 +945,10 @@ with tab_dash:
 
         if needs_pct and not cfg["near_pcts"]:
             st.warning("Near Cloud Top / Bottom select pannirukeenga - Target % (0.5 / 1 / 2 / 3) ethaavadhu onnu select pannunga.")
-        if "MCX" in cfg["segments"]:
-            st.caption("MCX: Yahoo-la MCX feed illa, so international futures price (USD) use aagudhu (Gold GC=F, Silver SI=F, Crude CL=F, Natural Gas NG=F, Copper HG=F).")
+        if any(x in cfg["segments"] for x in ("MCX", "Crypto")):
+            st.caption("MCX / Crypto: Yahoo-la Indian feed illa, so international price (USD) x USDINR = ₹ value use aagudhu "
+                       "(Gold ₹/10g, Silver ₹/kg, Crude ₹/barrel, Natural Gas ₹/mmBtu, Copper ₹/kg). "
+                       "MCX / Indian exchange premium & duty-um serala, so real price-la irundhu konjam vithyasam varum.")
         if active_channels():
             st.caption("Alert channel: " + ", ".join(active_channels()) +
                        "  ·  Stop: notification-la \"Action taken\" button / ntfy chat-la edhu type panni anuppinaalum alerts stop aagum (andha message log-la kaattum) / keela Pause")
@@ -857,7 +998,7 @@ with tab_dash:
             c.caption(t)
         st.divider()
 
-        order = lambda a: (list(INDICES).index(a["index"]), list(TFS).index(a["tf"]),
+        order = lambda a: (ALL_NAMES.index(a["index"]) if a["index"] in ALL_NAMES else len(ALL_NAMES), list(TFS).index(a["tf"]),
                            list(ZONES).index(a["zone"]), a.get("pct") or 0)
         for a in sorted(alerts, key=order):
             res = results.get(f"{a['index']}|{a['tf']}")
@@ -871,8 +1012,8 @@ with tab_dash:
             elif res["error"]:
                 c[4].write("-"); c[5].write("-"); c[6].markdown(":orange[data error]"); c[7].write("-")
             else:
-                c[4].write(f"{res['price']:,.2f}")
-                c[5].write(f"{res['bottom']:,.2f} - {res['top']:,.2f}")
+                c[4].write(fmt_p(res["price"]))
+                c[5].write(f"{fmt_p(res['bottom'])} - {fmt_p(res['top'])}")
                 m, reach = reach_info(a["zone"], a.get("pct"), res["price"], res["top"], res["bottom"])
                 c[6].markdown(":green[✅ IRUKKU]" if m else ":red[❌ ILLA]")
                 c[7].markdown(f":green[{reach}]" if m else f":orange[{reach}]")
