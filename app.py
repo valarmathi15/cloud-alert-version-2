@@ -907,8 +907,15 @@ def bulk_cb(action, scope):
 
 def sel_all_cb():
     v = st.session_state["sel_all"]
-    for a in load_alerts():
-        st.session_state[f"sel_{a['id']}"] = v
+    for i in st.session_state.get("_vis_ids", []):     # only the rows currently shown by the filters
+        st.session_state[f"sel_{i}"] = v
+
+
+FILTER_DEFAULTS = {"f_q": "", "f_seg": "all", "f_tf": "all", "f_zone": "all", "f_state": "all", "f_met": "all"}
+
+
+def clear_filters_cb():
+    st.session_state.update(FILTER_DEFAULTS)
 
 
 tab_dash, tab_log = st.tabs(["Dashboard", "Notification log"])
@@ -984,9 +991,44 @@ with tab_dash:
                 "(no need to click <b>Start alerts</b>).</div>", unsafe_allow_html=True)
             return
 
-        ids = [a["id"] for a in alerts]
+        # ---- filters: find an alert quickly when many indices / stocks are selected ----
+        for k_, v_ in FILTER_DEFAULTS.items():
+            st.session_state.setdefault(k_, v_)
+        fc = st.columns([2.4, 1.2, 1.3, 1.5, 1.1, 1.1, 0.9], vertical_alignment="bottom")
+        fc[0].text_input("Search", key="f_q", placeholder="🔍 Search index / stock (e.g. reliance, gold)")
+        fc[1].selectbox("Segment", ["all"] + SEGMENTS, key="f_seg",
+                        format_func=lambda x: "All" if x == "all" else x)
+        fc[2].selectbox("Timeframe", ["all"] + list(TFS), key="f_tf",
+                        format_func=lambda x: "All" if x == "all" else TFS[x])
+        fc[3].selectbox("Alert type", ["all"] + list(ZONES), key="f_zone",
+                        format_func=lambda x: "All" if x == "all" else ZONES[x])
+        fc[4].selectbox("State", ["all", "active", "paused"], key="f_state",
+                        format_func=lambda x: "All" if x == "all" else x.capitalize())
+        fc[5].selectbox("Status", ["all", "met", "not_met"], key="f_met",
+                        format_func=lambda x: {"all": "All", "met": "MET", "not_met": "NOT MET"}[x])
+        filt_on = any(st.session_state[k_] != v_ for k_, v_ in FILTER_DEFAULTS.items())
+        fc[6].button("✖ Clear", key="f_clear", on_click=clear_filters_cb, disabled=not filt_on, width="stretch")
+
+        def _met(a):
+            r_ = results.get(f"{a['index']}|{a['tf']}")
+            if not r_ or r_["error"]:
+                return None
+            return evaluate(a["zone"], a.get("pct"), r_["price"], r_["top"], r_["bottom"])
+
+        ss_ = st.session_state
+        q_ = ss_["f_q"].strip().lower()
+        visible = [a for a in alerts
+                   if (not q_ or q_ in a["index"].lower())
+                   and (ss_["f_seg"] == "all" or segment_of(a["index"]) == ss_["f_seg"])
+                   and (ss_["f_tf"] == "all" or a["tf"] == ss_["f_tf"])
+                   and (ss_["f_zone"] == "all" or a["zone"] == ss_["f_zone"])
+                   and (ss_["f_state"] == "all" or (a["state"] == "active") == (ss_["f_state"] == "active"))
+                   and (ss_["f_met"] == "all" or _met(a) is (ss_["f_met"] == "met"))]
+
+        ids = [a["id"] for a in visible]
+        ss_["_vis_ids"] = ids
         n_sel = sum(bool(st.session_state.get(f"sel_{i}")) for i in ids)
-        st.session_state["sel_all"] = n_sel == len(ids)
+        st.session_state["sel_all"] = bool(ids) and n_sel == len(ids)
 
         b = st.columns([1.1, 1.1, 1.3, 1.3, 1.3, 2.4])
         b[0].button("⏸ Pause all", key="b_pause_all", width="stretch", on_click=bulk_cb, args=("pause", "all"))
@@ -994,7 +1036,10 @@ with tab_dash:
         b[2].button("⏸ Pause selected", key="b_pause_sel", width="stretch", on_click=bulk_cb, args=("pause", "sel"))
         b[3].button("▶ Resume selected", key="b_resume_sel", width="stretch", on_click=bulk_cb, args=("resume", "sel"))
         b[4].button("🗑 Delete selected", key="b_del_sel", width="stretch", on_click=bulk_cb, args=("delete", "sel"))
-        b[5].caption(f"{n_sel} selected")
+        b[5].caption(f"{n_sel} selected · showing {len(visible)} of {len(alerts)} alerts")
+        if not visible:
+            st.info("No alerts match these filters. Click **✖ Clear** to see all alerts.")
+            return
 
         W = [0.4, 1.3, 0.8, 1.9, 1.0, 1.8, 1.3, 2.4, 1.0, 1.0, 0.5, 0.5]
         h = st.columns(W, vertical_alignment="center")
@@ -1006,7 +1051,7 @@ with tab_dash:
 
         order = lambda a: (ALL_NAMES.index(a["index"]) if a["index"] in ALL_NAMES else len(ALL_NAMES), list(TFS).index(a["tf"]),
                            list(ZONES).index(a["zone"]), a.get("pct") or 0)
-        for a in sorted(alerts, key=order):
+        for a in sorted(visible, key=order):
             res = results.get(f"{a['index']}|{a['tf']}")
             c = st.columns(W, vertical_alignment="center")
             c[0].checkbox("select", key=f"sel_{a['id']}", label_visibility="collapsed")
